@@ -1,0 +1,214 @@
+>> 정규 표현식을 이용하여 숫자를 공백으로 변경(정규 표현식으로 \d 는 숫자를 의미함.)
+>> 테스트 데이터 셋을 로딩하고 동일하게 Null 및 숫자를 공백으로 변환
+
+import pandas as pd
+news_df = pd.read_csv('./dataset/nsmc/ratings_train.txt', sep='\t')
+news_df.head()
+
+
+news_df.label.value_counts()
+
+x = news_df.iloc[:, :-1]
+y = news_df.iloc[:, -1]
+
+print(x.shape)
+print(y.shape)
+
+from sklearn.model_selection import train_test_split
+
+x_train, x_test, y_train, y_test = train_test_split(
+    x, y
+    , test_size=0.2
+    , random_state=11
+)
+
+# Null, 숫자를 공백으로 처리
+
+import re
+x_train = x_train.fillna(" ")
+# 숫자로 된 거는 공백으로 채우기
+x_train.document = x_train.document.apply(lambda x : re.sub(r"\d+", " ", x))
+x_test = x_test.fillna(" ")
+x_test.document = x_test.document.apply(lambda x : re.sub(r"\d+", " ", x))
+
+
+
+>> 한글 형태소 분석을 통해 형태소 단어로 토큰화(tokenizer 사용자 함수 작성 추천)
+>> 한글 형태소 엔진은 SNS 분석에 적합한 Okt 클래스를 이용
+>> morphs() 메서드는 입력 인자로 들어온 문장을 형태소 단어 형태로 토큰화해 list 객체 반환
+
+# morphs() 메소드는 입력 인자로 들어온 문장을 형태소 단어 형태로 토큰화하여 list로 변환
+
+import warnings
+
+warnings.filterwarnings('ignore')
+
+
+from konlpy.tag import Okt
+
+okt = Okt()
+
+def tw_tokenizer(text):
+    tokens_ko = okt.morphs(text)
+    return tokens_ko
+
+
+>> Okt 객체의 morphs( ) 객체를 이용한 tokenizer를 사용. ngram_range는 (1,2)
+>> 사이킷런의 TfidVectorizor를 이용, TF-IDF 피처 모델을 생성(10분 이상 소요)
+
+# 사이킷런의 TfidfVectorizer를 이용, TF-IDF 피처 모델을 생성(10분 소요)
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+
+# 위에서 만든 tw_tokenizer() 함수를 tokenizer로 사용, ngram_range는 (1,2)
+tfidf_vect = TfidfVectorizer(
+    tokenizer=tw_tokenizer
+    , ngram_range=(1,2)
+    , min_df=3
+    # 상위 10% 피처로 추출하지 않음
+    , max_df=0.9
+)
+
+tfidf_vect.fit(x_train.document)
+tfidf_train = tfidf_vect.transform(x_train.document)
+
+
+
+>> DT, RF, LR 을 이용하여 감성 분석 Classification 수행
+
+# 교차검증 및 하이퍼 파라미터 튜닝
+# Logistic Regression을 이용하여 감성 분석 Classification 수행
+# alpha 값의 역수(값이 작을수록 규제가 강한 것)
+# 로지스틱 회귀의 하이퍼 파라미터 C를 설정
+# C는 규제 강도를 조절하는  alpha 값의 역수로 작을수록 규제강도가 크며
+# Penalty는 규제의 유형을 설정하며 11 규제와 12규제가 있으며 기본은 12임
+lr_clf = LogisticRegression(random_state=0)
+params = {'C': [1,3.5,4.5,5.5,10]}
+
+gcv_lr = GridSearchCV(
+    lr_clf
+    , param_grid=params
+    , cv=3
+    , scoring='accuracy'
+    , verbose=0
+)
+
+gcv_lr.fit(tfidf_train, y_train)
+
+print(gcv_lr.best_params_, round(gcv_lr.best_score_, 4))
+
+# 테스트 검증을 가지고 최종 검증
+# 테스트 세트를 이용 예측 시 학습할 때 적용한 TfidfVectorizer를 그대로 사용해야 함
+# 그래야 학습 시 설정한 피처 개수와 테스트 데이터를 TfidfVectorizer로 변경할 피처 개수가 같아짐
+
+from sklearn.metrics import accuracy_score
+
+tfidf_test = tfidf_vect.transform(x_test.document)
+
+best_estimator = gcv_lr.best_estimator_
+
+lr_preds = best_estimator.predict(tfidf_test)
+
+print('Logistic Regression 정확도: ', accuracy_score(y_test, lr_preds))
+
+
+# rf를 이용하여 감성 분석 Classification 수행
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+
+rf_clf = RandomForestClassifier(random_state=0)
+
+rf_params = {
+    # 나무 개수
+    'n_estimators':[50, 100, 200]
+    , 'max_depth':[2, 3, 5]
+    , 'min_samples_leaf':[1, 5, 8]}
+
+gcv_rf = GridSearchCV(rf_clf
+                      # 매개변수들
+                      , param_grid=rf_params
+                      # 판정하기 위한 기준
+                      , scoring = 'accuracy'
+                      # 교차 검증 횟수
+                      , cv=3
+                      , verbose=1)
+
+gcv_rf.fit(tfidf_train, y_train)
+
+print(gcv_rf.best_params_, round(gcv_rf.best_score_, 4))
+
+# 테스트 검증을 가지고 최종 검증
+# 테스트 세트를 이용 예측 시 학습할 때 적용한 TfidfVectorizer를 그대로 사용해야 함
+# 그래야 학습 시 설정한 피처 개수와 테스트 데이터를 TfidfVectorizer로 변경할 피처 개수가 같아짐
+
+from sklearn.metrics import accuracy_score
+
+tfidf_test = tfidf_vect.transform(x_test.document)
+best_estimator = gcv_rf.best_estimator_
+rf_preds = best_estimator.predict(tfidf_test)
+
+print('RandomForest 정확도: ', accuracy_score(y_test, rf_preds))
+
+print(y_test.values[:10])
+print(rf_preds[:10])
+
+# dt를 이용하여 감성 분석 Classification 수행
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score
+
+dt_clf = DecisionTreeClassifier(random_state=0)
+
+dt_params = {
+    'max_depth':[2,3,5,10]
+    , 'max_depth':[2, 3, 5]
+    , 'min_samples_leaf':[1, 5, 8]}
+
+gcv_dt = GridSearchCV(dt_clf
+                      # 매개변수들
+                      , param_grid=dt_params
+                      # 판정하기 위한 기준
+                      , scoring = 'accuracy'
+                      # 교차 검증 횟수
+                      , cv=3
+                      , verbose=0)
+
+gcv_dt.fit(tfidf_train, y_train)
+
+print(gcv_dt.best_params_, round(gcv_dt.best_score_, 4))
+
+tfidf_test = tfidf_vect.transform(x_test.document)
+best_estimator = gcv_dt.best_estimator_
+dt_preds = best_estimator.predict(tfidf_test)
+
+print('Decision Tree 정확도: ', accuracy_score(y_test, dt_preds))
+
+
+>> 3개 분류 모델별 교차 검증 및 Parameter 최적화를 GridSearchCV 를 이용하여 수행(최적 분류 모델 선정)
+>> DT params = {'max_depth':[2,3,5,10], 'min_samples_split':[2,3,5],'min_samples_leaf':[1,5,8]}
+>> RF params = {'n_estimators':[50,100, 200], 'max_depth':[2,3,5], 'min_samples_leaf':[1,5,8]}
+>> LR params = { 'C': [1 ,3.5, 4.5, 5.5, 10 ] }\ C는 규제 강도를 조절하는 alpha 값의 역수로 작을 수록 규제 강도가 큼
+>> param_grid=params , cv=3 ,scoring='accuracy', verbose=1(학습진행 상황 표시)
+
+
+
+
+
+>> 학습데이터에 사용된 TfidVectorizer 객체 변수인 tfidf_vect를 이용해 transform()을 테스트 데이터의 document 칼럼에 수행
+
+# 사이킷런의 TfidfVectorizer를 이용, TF-IDF 피처 모델을 생성(10분 소요)
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+
+# 위에서 만든 tw_tokenizer() 함수를 tokenizer로 사용, ngram_range는 (1,2)
+tfidf_vect = TfidfVectorizer(
+    tokenizer=tw_tokenizer
+    , ngram_range=(1,2)
+    , min_df=3
+    # 상위 10% 피처로 추출하지 않음
+    , max_df=0.9
+)
+
+tfidf_vect.fit(x_train.document)
+tfidf_train = tfidf_vect.transform(x_train.document)
